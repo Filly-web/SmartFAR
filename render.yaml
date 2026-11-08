@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: britam-fixed-asset-governance
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 180
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: FAR_DATABASE_URL
+        sync: false
+      - key: FAR_SECRET_KEY
+        generateValue: true
+      - key: FAR_ADMIN_EMAIL
+        sync: false
+      - key: FAR_ADMIN_PASSWORD
+        sync: false
