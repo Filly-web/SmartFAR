@@ -1,4 +1,88 @@
-{% extends 'base.html' %}{% block title %}Sign in | Fixed Asset Governance{% endblock %}{% block content %}
-<div class="login-card"><div class="brand-mark large">FA</div><div class="eyebrow mt-3">BRITAM FINANCIAL CONTROL</div><h1 class="h3 fw-bold">Fixed Asset Governance Portal</h1><p class="text-muted">Sign in to manage the asset register, depreciation, reconciliation and audit reporting.</p>
-<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="mb-3"><label class="form-label">Administrator email</label><input class="form-control form-control-lg" type="email" name="email" autocomplete="username" required></div><div class="mb-3"><label class="form-label">Password</label><input class="form-control form-control-lg" type="password" name="password" autocomplete="current-password" required></div><button class="btn btn-primary btn-lg w-100">Sign in</button></form><div class="small text-muted mt-3">Access is controlled by the portal administrator.</div></div>
-{% endblock %}
+# Britam Fixed Asset Governance, Reconciliation & Audit Portal
+
+A standalone Flask application for fixed asset and intangible asset governance. It is deliberately separated from CETTP: it has its own application entry point, login, configuration, deployment service and database connection. It does not import CETTP code or reuse CETTP sessions/tables.
+
+## Included modules
+
+- Executive fixed asset dashboard and master FAR
+- Asset creation, automatic asset numbering, asset details and QR tags
+- Excel/CSV FAR import with mapping, staging and validation
+- Depreciation processing and units-of-production usage capture
+- Trial Balance imports, GL mappings and FAR/TB reconciliation
+- Reconciliation investigations
+- Asset transfers and disposals with retained history
+- CWIP projects and capitalization
+- Physical verification
+- Insurance register and claims
+- Tax WDV and deferred tax schedule capture
+- Period locks and reopening controls
+- Master FAR Excel/CSV/PDF exports
+- Twelve-sheet audit pack generator and audit log
+
+## Local setup
+
+```bash
+python -m venv .venv
+# Windows: .venv\\Scripts\\activate
+# Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Set the environment variables in `.env` in your shell or hosting dashboard. For local development, if `FAR_DATABASE_URL` is not set, the application uses a separate `far_governance_dev.db` SQLite file in this project directory.
+
+```bash
+python app.py
+```
+
+Open `http://127.0.0.1:5000`.
+
+## Production deployment (separate Render service)
+
+1. Create a **new Render Web Service** from this project folder/repository. Do not replace or modify the CETTP service.
+2. Create a **new, dedicated PostgreSQL database** for Fixed Asset Governance. Do not paste CETTP's database URL.
+3. Set `FAR_DATABASE_URL` to the new database's internal connection string. The app normalizes standard PostgreSQL URL schemes to psycopg 3.
+4. Set `FAR_SECRET_KEY`, `FAR_ADMIN_EMAIL` and `FAR_ADMIN_PASSWORD` to strong unique values.
+5. Use `pip install -r requirements.txt` as the build command and the included Procfile start command.
+6. Confirm `/health` returns `{"status":"ok",...}` and complete the smoke tests below before loading the official FAR.
+
+The included `render.yaml` is a deployment template. Review the plan and attach a persistent PostgreSQL database before production use. Do not use ephemeral local SQLite for production.
+
+## Database and separation
+
+All fixed asset tables retain the `fa_` prefix. The standalone app creates these tables in the database supplied through `FAR_DATABASE_URL`. This application does not read or write CETTP's database unless an administrator deliberately misconfigures the connection string. Keep the database credentials separate.
+
+## Security notes
+
+- The included login is an initial single-administrator credential gate configured through environment variables; it is not a complete enterprise identity and multi-user RBAC implementation.
+- Enable HTTPS at the hosting layer, use a strong secret, restrict database network access, and rotate credentials.
+- Before go-live, implement named-user provisioning, granular roles, maker-checker approvals, password reset/MFA, rate limiting, secure object storage for documents, backups and restore tests.
+- CSRF protection is enabled for form submissions. Upload size is capped at 25 MB.
+- Run the application behind Gunicorn; do not enable Flask debug mode in production.
+
+## Pre-go-live smoke tests
+
+1. Sign in using the configured administrator credentials.
+2. Open the dashboard and register one test asset.
+3. Import a small FAR test workbook; inspect mapping and exceptions before committing.
+4. Export Master FAR to XLSX, CSV and PDF.
+5. Import a test TB and configure cost/accumulated depreciation GL mappings.
+6. Run reconciliation and inspect a deliberately seeded variance.
+7. Run depreciation for a test period and verify the run cannot be duplicated.
+8. Test transfer, disposal, QR tag, verification, CWIP, insurance and tax schedule workflows.
+9. Lock a test period and verify blocked transactions; test authorized reopening.
+10. Verify audit history and database backup/restore.
+
+## Important accounting deployment gate
+
+Do not migrate the official company FAR or rely on outputs for statutory reporting until the organization's accounting policies, useful lives, residual values, depreciation conventions, tax pools/rates, GL mappings, opening balances, reconciliation tolerances and approval matrix have been configured and independently tested. This package is a working application foundation; the listed governance/security enhancements and user acceptance testing remain production prerequisites.
+
+
+## 2025 opening FAR and monthly depreciation
+
+The initial migration is designed for the complete Fixed Asset Register as at 31 December 2025. In **Fixed Assets → Import FAR**, select **2025 Opening FAR (initial migration)**, upload the full register, review the source mapping, and commit the opening batch. This mode bypasses accounting/depreciation consistency checks so historical balances are imported as supplied; it does not bypass database-critical requirements such as a unique asset number. Missing essential dates/descriptions/categories receive clearly defined placeholders only where the database requires a value. Review these records after migration.
+
+The opening FAR is a one-time baseline. Once committed, depreciation posting is restricted to January 2026 onward. Monthly runs use each asset's depreciation method and parameters: straight-line useful life in months, reducing-balance annual rate (entered as a percentage and applied monthly), or units-of-production with captured monthly usage. The engine prevents duplicate period runs. Verify the opening FAR and depreciation parameters before posting the first month; do not treat the migration as an audit or approval of source balances.
+
+### Downloads and batch imports (V1.2)
+After login, use **Downloads & Templates** to download the 2025 opening FAR workbook, the new asset batch workbook, and the asset disposal batch workbook. Once the opening FAR has been imported, the page also provides an export of the currently stored register balances. The opening 2025 migration bypasses accounting/depreciation consistency checks; database-required fields are defaulted only where absent, and database uniqueness constraints are handled without rejecting the entire batch. New asset and disposal batch uploads use standard row-level checks and audit logging.

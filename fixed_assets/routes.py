@@ -145,14 +145,14 @@ def create_fixed_assets_blueprint(db, M):
         return render_template('fixed_assets/asset_detail.html',a=a,transfers=transfers,disposals=disposals,dep_history=dep_history)
 
     # Import mapping and staging
-    FIELDS=['asset_number','placed_in_service','description','major_category','minor_category','department','location','tag_number','serial_number','supplier','invoice_number','purchase_order_number','purchase_date','cost','residual_value','useful_life_months','depreciation_method','total_units_of_production','opening_accum_dep','ytd_depreciation','accumulated_dep','nbv','status']
+    FIELDS=['asset_number','placed_in_service','description','major_category','minor_category','department','location','tag_number','serial_number','supplier','invoice_number','purchase_order_number','purchase_date','cost','residual_value','useful_life_months','depreciation_method','depreciation_rate','total_units_of_production','opening_accum_dep','ytd_depreciation','accumulated_dep','nbv','status']
     SYNONYMS={
       'asset_number':['asset number','asset no','asset no.','asset code','asset id'], 'placed_in_service':['date placed in service','placed in service','in service date'],
       'description':['description','asset description','name'], 'major_category':['major category','asset category','category'], 'minor_category':['minor category','sub category','subcategory'],
       'department':['department','dept'], 'location':['location','branch','site'], 'tag_number':['tag number','asset tag','tag no'], 'serial_number':['serial number','serial no','serial'],
       'supplier':['supplier','vendor'], 'invoice_number':['invoice number','invoice no'], 'purchase_order_number':['purchase order number','po number','po no'],
       'purchase_date':['purchase date','acquisition date'], 'cost':['cost','asset cost','gross cost'], 'residual_value':['residual value','salvage value'],
-      'useful_life_months':['useful life months','useful life','life months'], 'depreciation_method':['depreciation method','method'], 'total_units_of_production':['total units of production','estimated total units','total production units'],
+      'useful_life_months':['useful life months','useful life','life months'], 'depreciation_method':['depreciation method','method'], 'depreciation_rate':['depreciation rate','annual depreciation rate','rate percent'], 'total_units_of_production':['total units of production','estimated total units','total production units'],
       'opening_accum_dep':['oad','opening accumulated depreciation','opening acc depreciation'], 'ytd_depreciation':['ytd depreciation','current year depreciation','depreciation charge'],
       'accumulated_dep':['accumulated depreciation','accum depreciation','accum dep'], 'nbv':['net book value','nbv'], 'status':['asset status','status']}
     def normalize_header(x): return re.sub(r'[^a-z0-9 ]','',str(x or '').lower()).strip()
@@ -211,6 +211,122 @@ def create_fixed_assets_blueprint(db, M):
         if num and (num in seen_assets or num in existing_assets): errors.append('Duplicate asset number')
         return errors, warnings
 
+
+    @bp.route('/downloads')
+    @required
+    def downloads():
+        opening_imported=ImportBatch.query.filter_by(import_type='OPENING_2025',status='IMPORTED').first() is not None
+        return render_template('fixed_assets/downloads.html', opening_imported=opening_imported)
+
+    def workbook_download(filename, sheet_name, headers, sample=None, instructions=None):
+        from openpyxl.styles import Font, PatternFill
+        wb=Workbook(); ws=wb.active; ws.title=sheet_name
+        if instructions: ws.append([instructions]); ws.append([])
+        ws.append(headers)
+        header_row=3 if instructions else 1
+        for cell in ws[header_row]:
+            cell.font=Font(bold=True,color='FFFFFF'); cell.fill=PatternFill('solid',fgColor='17365D')
+        for row in (sample or []): ws.append(row)
+        ws.freeze_panes=f'A{header_row+1}'; ws.auto_filter.ref=f'A{header_row}:{ws.cell(ws.max_row,ws.max_column).coordinate}'
+        for col in ws.columns:
+            letter=col[0].column_letter
+            ws.column_dimensions[letter].width=min(max(max(len(str(c.value or '')) for c in col)+2,14),36)
+        out=BytesIO(); wb.save(out); out.seek(0)
+        return send_file(out,as_attachment=True,download_name=filename,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    @bp.route('/downloads/opening-2025-export.xlsx')
+    @required
+    def opening_2025_export():
+        assets=Asset.query.filter(Asset.archived_at.is_(None)).order_by(Asset.asset_number).all()
+        headers=['Asset Number','Date Placed in Service','Description','Major Category','Minor Category','Department','Location','Custodian','Tag Number','Serial Number','Supplier','Invoice Number','Purchase Order Number','Purchase Date','Cost','Residual Value','Useful Life Months','Depreciation Method','Depreciation Rate (%)','Total Units of Production','Opening Accumulated Depreciation','YTD Depreciation','Accumulated Depreciation','NBV','Asset Status']
+        rows=[[a.asset_number,a.placed_in_service,a.description,a.major_category,a.minor_category,a.department,a.location,a.custodian,a.tag_number,a.serial_number,a.supplier,a.invoice_number,a.purchase_order_number,a.purchase_date,float(a.cost or 0),float(a.residual_value or 0),a.useful_life_months,a.depreciation_method,float(a.depreciation_rate*100) if a.depreciation_rate is not None else None,float(a.total_units_of_production) if a.total_units_of_production is not None else None,float(a.opening_accum_dep or 0),float(a.ytd_depreciation or 0),float(a.accumulated_dep or 0),float(a.nbv or 0),a.status] for a in assets]
+        return workbook_download('Britam_2025_Opening_FAR_Imported_Balances.xlsx','Opening FAR Balances',headers,rows,'Export of the currently stored FAR balances. This is a snapshot of current portal data, not a historical immutable copy.')
+
+    @bp.route('/downloads/opening-2025-template.xlsx')
+    @required
+    def opening_2025_template():
+        headers=['Asset Number','Date Placed in Service','Description','Major Category','Minor Category','Department','Location','Custodian','Tag Number','Serial Number','Supplier','Invoice Number','Purchase Order Number','Purchase Date','Cost','Residual Value','Useful Life Months','Depreciation Method','Depreciation Rate (%)','Total Units of Production','Opening Accumulated Depreciation','YTD Depreciation','Accumulated Depreciation','NBV','Asset Status']
+        sample=[['','31/12/2025','Example asset description','IT Equipment','Computer','Finance','Head Office','','','','','','','',0,0,60,'STRAIGHT_LINE',None,None,0,0,0,0,'ACTIVE']]
+        return workbook_download('Britam_2025_Opening_FAR_Import_Template.xlsx','2025 Opening FAR',headers,sample,'2025 OPENING MIGRATION: Historical figures are imported as supplied. Accounting/depreciation validation is bypassed. Blank asset numbers are generated; missing required descriptive fields receive safe defaults.')
+
+    @bp.route('/downloads/new-assets-template.xlsx')
+    @required
+    def new_assets_template():
+        headers=['Asset Number','Date Placed in Service','Description','Major Category','Minor Category','Department','Location','Custodian','Tag Number','Serial Number','Supplier','Invoice Number','Purchase Order Number','Purchase Date','Cost','Residual Value','Useful Life Months','Depreciation Method','Depreciation Rate (%)','Total Units of Production']
+        sample=[['','01/01/2026','Example new asset','IT Equipment','Computer','Finance','Head Office','','','','Supplier','INV-001','PO-001','01/01/2026',1000000,0,60,'STRAIGHT_LINE',None,None]]
+        return workbook_download('Britam_New_Assets_Batch_Upload_Template.xlsx','New Asset Additions',headers,sample,'One row per new asset. Asset Number may be blank for automatic numbering. Methods: STRAIGHT_LINE, REDUCING_BALANCE, UNITS_OF_PRODUCTION.')
+
+    @bp.route('/downloads/disposals-template.xlsx')
+    @required
+    def disposals_template():
+        headers=['Asset Number','Disposal Date','Disposal Type','Proceeds','Buyer','Disposal Reason','Approval Reference']
+        sample=[['IT-2026-0001','31/03/2026','SALE',250000,'Buyer name','Asset sold','APP-001']]
+        return workbook_download('Britam_Asset_Disposals_Batch_Upload_Template.xlsx','Asset Disposals',headers,sample,'Use an existing Asset Number. NBV and gain/loss are calculated from the portal at processing.')
+
+    @bp.route('/batch/new-assets',methods=['GET','POST'])
+    @required
+    def batch_new_assets():
+        if request.method=='POST':
+            try:
+                f=request.files.get('file')
+                if not f or not f.filename: raise ValueError('Select an Excel or CSV file.')
+                filename,headers,records=read_rows(f); mapping=auto_mapping(headers)
+                if len(records)>10000: raise ValueError('Maximum 10,000 assets per batch.')
+                created=0; rejected=[]
+                for ix,raw in enumerate(records,start=2):
+                    d=mapped_record(raw,mapping)
+                    try:
+                        desc=str(d.get('description') or '').strip(); major=str(d.get('major_category') or '').strip(); minor=str(d.get('minor_category') or '').strip()
+                        placed=parse_date(d.get('placed_in_service')); cost=money(d.get('cost')); life=int(d.get('useful_life_months') or 0)
+                        if not desc or not major or not minor or not placed or cost<=0 or life<=0: raise ValueError('Description, categories, service date, positive cost and useful life are required.')
+                        num=str(d.get('asset_number') or '').strip() or asset_number(major)
+                        if Asset.query.filter_by(asset_number=num).first(): raise ValueError(f'Asset number {num} already exists.')
+                        tag=str(d.get('tag_number') or '').strip() or None
+                        if tag and Asset.query.filter_by(tag_number=tag).first(): raise ValueError(f'Tag {tag} already exists.')
+                        residual=money(d.get('residual_value')); method=str(d.get('depreciation_method') or 'STRAIGHT_LINE').upper()
+                        a=Asset(asset_number=num,description=desc[:255],major_category=major[:120],minor_category=minor[:120],department=str(d.get('department') or '')[:120] or None,location=str(d.get('location') or '')[:150] or None,custodian=str(d.get('custodian') or '')[:150] or None,tag_number=tag,serial_number=str(d.get('serial_number') or '')[:120] or None,supplier=str(d.get('supplier') or '')[:180] or None,invoice_number=str(d.get('invoice_number') or '')[:100] or None,purchase_order_number=str(d.get('purchase_order_number') or '')[:100] or None,purchase_date=parse_date(d.get('purchase_date')),placed_in_service=placed,cost=cost,residual_value=residual,useful_life_months=life,depreciation_method=method,depreciation_rate=(money(d.get('depreciation_rate'))/100 if d.get('depreciation_rate') not in (None,'') else None),total_units_of_production=money(d.get('total_units_of_production')) if d.get('total_units_of_production') not in (None,'') else None,opening_accum_dep=Decimal('0'),ytd_depreciation=Decimal('0'),accumulated_dep=Decimal('0'),nbv=cost,status='ACTIVE',is_intangible='INTANG' in major.upper() or 'SOFTWARE' in major.upper(),created_by=actor())
+                        db.session.add(a); db.session.flush(); audit('BATCH_ADD','ASSET',a,None,{'asset_number':num}); db.session.commit(); created+=1
+                    except Exception as row_error:
+                        db.session.rollback(); rejected.append(f'Row {ix}: {row_error}')
+                flash(f'Batch additions: {created} created; {len(rejected)} rejected. '+(' | '.join(rejected[:12]) if rejected else ''),'success' if not rejected else 'warning')
+            except Exception as e: db.session.rollback(); flash(str(e),'danger')
+            return redirect(url_for('fixed_assets.batch_new_assets'))
+        return render_template('fixed_assets/batch_new_assets.html')
+
+    @bp.route('/batch/disposals',methods=['GET','POST'])
+    @required
+    def batch_disposals():
+        if request.method=='POST':
+            try:
+                f=request.files.get('file')
+                if not f or not f.filename: raise ValueError('Select an Excel or CSV file.')
+                filename,headers,records=read_rows(f)
+                if len(records)>10000: raise ValueError('Maximum 10,000 disposals per batch.')
+                norm={normalize_header(h):h for h in headers}; mapping={}
+                aliases={'asset_number':['asset number','asset no','asset no.'],'disposal_date':['disposal date','date of disposal'],'disposal_type':['disposal type','type'],'proceeds':['proceeds','disposal proceeds'],'buyer':['buyer','purchaser'],'reason':['disposal reason','reason'],'approval_reference':['approval reference','approval ref']}
+                for fld,opts in aliases.items():
+                    for opt in opts:
+                        if normalize_header(opt) in norm: mapping[fld]=norm[normalize_header(opt)]; break
+                created=0; rejected=[]
+                for ix,raw in enumerate(records,start=2):
+                    d=mapped_record(raw,mapping)
+                    try:
+                        num=str(d.get('asset_number') or '').strip(); a=Asset.query.filter_by(asset_number=num).first()
+                        if not a: raise ValueError(f'Asset {num or "(blank)"} not found.')
+                        if a.status!='ACTIVE': raise ValueError('Asset is not active.')
+                        when=parse_date(d.get('disposal_date')); reason=str(d.get('reason') or '').strip(); proceeds=money(d.get('proceeds'))
+                        if not when or not reason: raise ValueError('Disposal date and reason are required.')
+                        if period_locked(when.strftime('%Y-%m')): raise ValueError(f'Period {when:%Y-%m} is locked.')
+                        nbv=money(a.nbv); gain=money(proceeds-nbv)
+                        disp=Disposal(asset_id=a.id,disposal_type=str(d.get('disposal_type') or 'SALE').upper(),disposal_date=when,proceeds=proceeds,nbv_at_disposal=nbv,gain_loss=gain,buyer=str(d.get('buyer') or '')[:180] or None,reason=reason,approval_reference=str(d.get('approval_reference') or '')[:100] or None,requested_by=actor(),approved_by=actor())
+                        old={'status':a.status,'nbv':str(a.nbv)}; a.status='DISPOSED'; a.disposed_at=when; a.disposed_proceeds=proceeds; a.disposal_gain_loss=gain; a.nbv=Decimal('0'); db.session.add(disp); audit('BATCH_DISPOSE','ASSET',a,old,{'status':'DISPOSED','gain_loss':str(gain)}); db.session.commit(); created+=1
+                    except Exception as row_error:
+                        db.session.rollback(); rejected.append(f'Row {ix}: {row_error}')
+                flash(f'Batch disposals: {created} disposed; {len(rejected)} rejected. '+(' | '.join(rejected[:12]) if rejected else ''),'success' if not rejected else 'warning')
+            except Exception as e: db.session.rollback(); flash(str(e),'danger')
+            return redirect(url_for('fixed_assets.batch_disposals'))
+        return render_template('fixed_assets/batch_disposals.html')
+
     @bp.route('/import',methods=['GET','POST'])
     @required
     def import_far():
@@ -220,10 +336,17 @@ def create_fixed_assets_blueprint(db, M):
                 if not f or not f.filename: raise ValueError('Select an Excel or CSV file.')
                 filename,headers,records=read_rows(f)
                 if len(records)>100000: raise ValueError('A single import is limited to 100,000 data rows.')
-                mapping=auto_mapping(headers); existing_assets={x[0] for x in db.session.query(Asset.asset_number).all()}; existing_tags={x[0] for x in db.session.query(Asset.tag_number).filter(Asset.tag_number.isnot(None)).all()}; existing_serials={x[0] for x in db.session.query(Asset.serial_number).filter(Asset.serial_number.isnot(None)).all()}; batch=ImportBatch(batch_reference='FAR-'+datetime.utcnow().strftime('%Y%m%d%H%M%S')+'-'+secrets.token_hex(2).upper(),file_name=filename,total_rows=len(records),uploaded_by=actor(),column_mapping=mapping)
+                import_type=request.form.get('import_type','STANDARD').upper()
+                if import_type not in ('STANDARD','OPENING_2025'): import_type='STANDARD'
+                mapping=auto_mapping(headers); existing_assets={x[0] for x in db.session.query(Asset.asset_number).all()}; existing_tags={x[0] for x in db.session.query(Asset.tag_number).filter(Asset.tag_number.isnot(None)).all()}; existing_serials={x[0] for x in db.session.query(Asset.serial_number).filter(Asset.serial_number.isnot(None)).all()}; batch=ImportBatch(batch_reference='FAR-'+datetime.utcnow().strftime('%Y%m%d%H%M%S')+'-'+secrets.token_hex(2).upper(),file_name=filename,total_rows=len(records),uploaded_by=actor(),column_mapping=mapping,import_type=import_type)
                 db.session.add(batch); db.session.flush(); seen_assets=set(); seen_tags=set(); good=bad=0; seen_serials=set()
                 for i,raw in enumerate(records, start=2):
-                    mapped=mapped_record(raw,mapping); errors,warnings=validate_import(mapped,seen_assets,seen_tags,seen_serials,existing_assets,existing_tags,existing_serials)
+                    mapped=mapped_record(raw,mapping)
+                    if import_type=='OPENING_2025':
+                        # Opening migration bypasses accounting/depreciation validation. Database-critical conflicts are handled at commit.
+                        errors=[]; warnings=['2025 opening migration: historical balances imported as supplied; review exceptions after migration.']
+                    else:
+                        errors,warnings=validate_import(mapped,seen_assets,seen_tags,seen_serials,existing_assets,existing_tags,existing_serials)
                     if not errors:
                         good+=1
                         if mapped.get('asset_number'): seen_assets.add(str(mapped['asset_number']).strip())
@@ -256,7 +379,10 @@ def create_fixed_assets_blueprint(db, M):
         existing_assets={x[0] for x in db.session.query(Asset.asset_number).all()}; existing_tags={x[0] for x in db.session.query(Asset.tag_number).filter(Asset.tag_number.isnot(None)).all()}; existing_serials={x[0] for x in db.session.query(Asset.serial_number).filter(Asset.serial_number.isnot(None)).all()}
         for row in ImportRow.query.filter_by(batch_id=batch.id).order_by(ImportRow.row_number).yield_per(1000):
             mapped=mapped_record(row.raw_data or {},mapping)
-            errors,warnings=validate_import(mapped,seen_assets,seen_tags,seen_serials,existing_assets,existing_tags,existing_serials)
+            if batch.import_type=='OPENING_2025':
+                errors=[]; warnings=['2025 opening migration: validation bypassed; balances preserved as supplied.']
+            else:
+                errors,warnings=validate_import(mapped,seen_assets,seen_tags,seen_serials,existing_assets,existing_tags,existing_serials)
             row.mapped_data=mapped; row.errors=errors; row.warnings=warnings
             if errors: bad+=1
             else:
@@ -274,8 +400,11 @@ def create_fixed_assets_blueprint(db, M):
     def import_commit(batch_id):
         batch=ImportBatch.query.get_or_404(batch_id)
         if batch.status!='STAGED': flash('This import batch has already been processed.','warning'); return redirect(url_for('fixed_assets.import_preview',batch_id=batch.id))
-        period=request.form.get('period') or date.today().strftime('%Y-%m')
-        if period_locked(period): flash(f'Period {period} is locked.','danger'); return redirect(url_for('fixed_assets.import_preview',batch_id=batch.id))
+        period='2025-12' if batch.import_type=='OPENING_2025' else (request.form.get('period') or date.today().strftime('%Y-%m'))
+        if batch.import_type=='OPENING_2025' and ImportBatch.query.filter_by(import_type='OPENING_2025',status='IMPORTED').first():
+            flash('A 2025 opening FAR has already been imported. Use an authorized correction process rather than uploading a second opening batch.','danger')
+            return redirect(url_for('fixed_assets.import_preview',batch_id=batch.id))
+        if batch.import_type!='OPENING_2025' and period_locked(period): flash(f'Period {period} is locked.','danger'); return redirect(url_for('fixed_assets.import_preview',batch_id=batch.id))
         inserted=0; errors=0; number_counters={}
         existing_assets={x[0] for x in db.session.query(Asset.asset_number).all()}; existing_tags={x[0] for x in db.session.query(Asset.tag_number).filter(Asset.tag_number.isnot(None)).all()}; existing_serials={x[0] for x in db.session.query(Asset.serial_number).filter(Asset.serial_number.isnot(None)).all()}
         try:
@@ -283,26 +412,44 @@ def create_fixed_assets_blueprint(db, M):
             pending_asset_links=[]
             for row in rows:
                 data=row.mapped_data or {}; issues=list(row.errors or [])
-                if issues: errors+=1; continue
-                # Re-check duplicates at commit time to protect against concurrent uploads.
+                if batch.import_type!='OPENING_2025' and issues: errors+=1; continue
+                # Re-check database uniqueness at commit time. Opening migration bypasses accounting validation, not database constraints.
                 num=str(data.get('asset_number') or '').strip() or asset_number(str(data.get('major_category') or 'ASSET'),number_counters)
                 tag=str(data.get('tag_number') or '').strip() or None
                 serial=str(data.get('serial_number') or '').strip() or None
-                if num in existing_assets or (tag and (tag in existing_tags)) or (serial and serial in existing_serials):
+                if batch.import_type=='OPENING_2025':
+                    if num in existing_assets: num=asset_number(str(data.get('major_category') or 'ASSET'),number_counters)
+                    if tag and tag in existing_tags: tag=None
+                elif num in existing_assets or (tag and tag in existing_tags) or (serial and serial in existing_serials):
                     row.errors=['Duplicate detected at commit']; errors+=1; continue
                 cost=money(data.get('cost')); opening=money(data.get('opening_accum_dep')); ytd=money(data.get('ytd_depreciation'))
                 acc=money(data.get('accumulated_dep')) if data.get('accumulated_dep') not in (None,'') else opening+ytd
                 nbv=money(data.get('nbv')) if data.get('nbv') not in (None,'') else cost-acc
                 placed=parse_date(data.get('placed_in_service'))
-                if not placed or cost<=0 or acc<0 or acc>cost or nbv<0 or nbv!=cost-acc or money(opening+ytd)!=money(acc):
-                    row.errors=['Financial or date validation failed at commit']; errors+=1; continue
-                a=Asset(asset_number=num,description=str(data.get('description'))[:255],major_category=str(data.get('major_category'))[:120],minor_category=str(data.get('minor_category'))[:120],
+                if batch.import_type=='OPENING_2025':
+                    # Preserve source balances. Supply only database-required descriptive/date defaults where the source is blank.
+                    placed=placed or parse_date(data.get('purchase_date')) or date(2025,12,31)
+                    description=str(data.get('description') or f'Imported asset row {row.row_number}')[:255]
+                    major=str(data.get('major_category') or 'UNCLASSIFIED')[:120]
+                    minor=str(data.get('minor_category') or 'UNCLASSIFIED')[:120]
+                    residual=money(data.get('residual_value'))
+                    try: life=int(data.get('useful_life_months') or 0)
+                    except (TypeError,ValueError): life=0
+                    method=str(data.get('depreciation_method') or 'STRAIGHT_LINE').upper()
+                    status=str(data.get('status') or 'ACTIVE').upper()
+                else:
+                    if not placed or cost<=0 or acc<0 or acc>cost or nbv<0 or nbv!=cost-acc or money(opening+ytd)!=money(acc):
+                        row.errors=['Financial or date validation failed at commit']; errors+=1; continue
+                    description=str(data.get('description'))[:255]; major=str(data.get('major_category'))[:120]; minor=str(data.get('minor_category'))[:120]
+                    residual=money(data.get('residual_value')); life=int(data.get('useful_life_months') or 0)
+                    method=str(data.get('depreciation_method') or 'STRAIGHT_LINE').upper(); status=str(data.get('status') or 'ACTIVE').upper()
+                a=Asset(asset_number=num,description=description,major_category=major,minor_category=minor,
                     department=str(data.get('department') or '')[:120] or None,location=str(data.get('location') or '')[:150] or None,custodian=None,
                     tag_number=tag,serial_number=serial,supplier=str(data.get('supplier') or '')[:180] or None,
                     invoice_number=str(data.get('invoice_number') or '')[:100] or None,purchase_order_number=str(data.get('purchase_order_number') or '')[:100] or None,
-                    purchase_date=parse_date(data.get('purchase_date')),placed_in_service=placed,cost=cost,residual_value=money(data.get('residual_value')),
-                    useful_life_months=int(data.get('useful_life_months') or 0),depreciation_method=str(data.get('depreciation_method') or 'STRAIGHT_LINE').upper(),total_units_of_production=money(data.get('total_units_of_production')) if data.get('total_units_of_production') not in (None,'') else None,
-                    opening_accum_dep=opening,ytd_depreciation=ytd,accumulated_dep=acc,nbv=nbv,status=str(data.get('status') or 'ACTIVE').upper(),
+                    purchase_date=parse_date(data.get('purchase_date')),placed_in_service=placed,cost=cost,residual_value=residual,
+                    useful_life_months=life,depreciation_method=method,depreciation_rate=(money(data.get('depreciation_rate'))/100 if data.get('depreciation_rate') not in (None,'') else None),total_units_of_production=money(data.get('total_units_of_production')) if data.get('total_units_of_production') not in (None,'') else None,
+                    opening_accum_dep=opening,ytd_depreciation=ytd,accumulated_dep=acc,nbv=nbv,status=status,
                     is_intangible='INTANG' in str(data.get('major_category') or '').upper() or 'SOFTWARE' in str(data.get('major_category') or '').upper(),
                     source_batch_id=batch.id,created_by=actor())
                 db.session.add(a); pending_asset_links.append((row,a)); inserted+=1
@@ -318,7 +465,7 @@ def create_fixed_assets_blueprint(db, M):
                 for import_row, asset_obj in pending_asset_links: import_row.imported_asset_id=asset_obj.id
             batch.status='IMPORTED' if errors==0 else ('PARTIAL' if inserted else 'FAILED'); batch.successful_rows=inserted; batch.failed_rows=errors
             audit('IMPORT','FAR_IMPORT',batch,None,{'inserted':inserted,'errors':errors}); db.session.commit()
-            flash(f'Import completed: {inserted:,} assets created; {errors:,} rows rejected.','success' if not errors else 'warning')
+            flash((f'2025 opening FAR imported: {inserted:,} assets. Historical balances were preserved; depreciation processing is enabled from January 2026.' if batch.import_type=='OPENING_2025' else f'Import completed: {inserted:,} assets created; {errors:,} rows rejected.'),'success' if not errors else 'warning')
         except Exception as e: db.session.rollback(); flash(f'Import failed and was rolled back: {e}','danger')
         return redirect(url_for('fixed_assets.import_preview',batch_id=batch.id))
 
@@ -343,6 +490,8 @@ def create_fixed_assets_blueprint(db, M):
             period=request.form.get('period','').strip()
             try:
                 datetime.strptime(period,'%Y-%m')
+                if period < '2026-01': raise ValueError('The FAR opening position is 31 December 2025. Monthly depreciation can only be processed from January 2026 onward.')
+                if not ImportBatch.query.filter_by(import_type='OPENING_2025',status='IMPORTED').first(): raise ValueError('Import and commit the 2025 opening FAR before running monthly depreciation.')
                 if period_locked(period): raise ValueError(f'Period {period} is locked.')
                 if DepRun.query.filter_by(period=period).first(): raise ValueError(f'Depreciation has already been processed for {period}. Reverse through an authorized adjustment; do not rerun.')
                 year,month=map(int,period.split('-')); cutoff=date(year,month,1)
